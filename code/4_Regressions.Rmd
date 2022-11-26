@@ -1,0 +1,200 @@
+---
+title: "Regressions"
+output: html_document
+date: '2022-11-14'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r cars}
+library(lubridate)
+library(sf)
+library(tidyr)
+library(zoo)
+library(lubridate)
+library(fixest)
+library(GGally)
+library(broom)
+library(dplyr)
+library(ggmap)
+library(viridis)
+```
+
+##questions for brianna:diff between #tracts and mindist to hwy
+
+## Data wrangling:
+```{r}
+#1) Read in highway shapefiles and census polygons
+highway <- read_sf("/Users/research/Desktop/valeska-honors-new/data-raw/2019_minnesota_roads/tl_2019_27_prisecroads.shp", quiet = TRUE, stringsAsFactors = FALSE, as_tibble = TRUE)
+censuspolygons <- read_sf("/Users/research/Desktop/valeska-honors-new/data-raw/census-shapefiles/tracts/tl_2020_27_tract/tl_2020_27_tract.shp", quiet = TRUE, stringsAsFactors = FALSE, as_tibble = TRUE)
+
+
+#1b) get metro census polygons to intersect them with the highway shapefile
+censuspolygons$COUNTYFP <- as.numeric(censuspolygons$COUNTYFP)
+
+metrocensuspolygons <- censuspolygons %>%
+  filter(COUNTYFP %in% c(123,53,3,19,37,139,163))
+
+metrocensuspolygons<- metrocensuspolygons %>% mutate(TRACTCE=as.numeric(TRACTCE))
+
+# 1c) doing the Buffer of 600m to set control and treatment groups for polygons 
+
+buffer_600m <- st_buffer(highway, 600)
+metrocensuspolygons$HWY600m <-(st_intersects(metrocensuspolygons,buffer_600m) %>% lengths()) > 0
+
+##Pivot longer
+#test <- metroarea %>% 
+  #pivot_longer(cols = c(`pm_25_01`, `pm_25_02`, `pm_25_03`, `pm_25_04`, `pm_25_05`, `pm_25_06`,
+                        #`pm_25_07`, `pm_25_08`, `pm_25_09`, `pm_25_10`, `pm_25_11`, `pm_25_12`), 
+               #names_to = "Month", values_to = "Corrected PM2.5") 
+
+##Put together year and month column
+##lubridage package
+#test$Month = gsub("pm_25_","",test$Month)
+
+#test$Date <- as.yearmon(paste(test$year, test$Month), "%Y %m")
+#names(test)[21] <- "Pollution" 
+
+#test <- test %>% 
+  #mutate(covid = ifelse(Date>=as.yearmon("2020 3","%Y %m"), "1", "0"),
+         #covid = as.numeric(covid),
+         #near = ifelse(CloseHW == "close", "1", "0"),
+         #near = as.numeric(near))
+
+#test$near_post<-(test$near)*(test$covid)
+
+#test <- test %>%  mutate(log_pollution = log(Pollution))
+
+#create unique id for dates
+#date_id<-test %>% 
+  #group_by(Date) %>% 
+  #summarise(uniqueid = n_distinct(Date)) %>% 
+  #mutate(Date_ID = row_number())
+
+#merge 
+
+#test <-test %>%  left_join(date_id, by= "Date")
+#test <- test[-27]  
+
+#create variable
+#test <- test %>% mutate(near_date = Date_ID*near)
+
+#write.csv(test, "~/Desktop/valeska-honors-new/data-clean/metroarea_centroids_panel.csv")
+
+##################merge test (metro tracts centroids) with polygons (metro tracts polygons) to 
+#include census tracts that intersect w the highways but not necessarily have 
+#the centroid within 600m buffer 
+
+
+metroarea <- read.csv("~/Desktop/valeska-honors-new/data-clean/metroarea_centroids_panel.csv",
+          sep=",", header=TRUE)
+
+metroarea$TRACTCE <- as.numeric(metroarea$TRACTCE)
+metrocensuspolygons$TRACTCE <- as.numeric(metrocensuspolygons$TRACTCE)
+
+test <- metroarea %>% 
+  left_join(metrocensuspolygons %>% select(TRACTCE, HWY600m, geometry), by = "TRACTCE")
+
+##rename some columns to clear confusion 
+names(test)[20] <- "centroid_CloseHW"
+names(test)[25] <- "centroid_near"
+names(test)[26] <- "centroid_near_post"
+names(test)[29] <- "centroid_near_date"
+test <- test[-31]
+
+test <- test %>% 
+      mutate(polygon_near = ifelse(HWY600m == "TRUE", "1", "0"),
+         polygon_near = as.numeric(polygon_near),
+         polygon_near_post = polygon_near*covid,
+         polygon_near_date = polygon_near*Date_ID)
+
+write.csv(test, "~/Desktop/valeska-honors-new/data-clean/metroarea_panel_both.csv")
+
+
+###clean issue with diff #'s of tracts and distance to highway
+table(test$TRACTCE) ##tract 980000 is repeated 288 times instead of 72
+table(test$MinDistToHwy) ##distance 1093.81445725629, 480.133525551062, is 144 instead of 72
+
+test1 <- test %>% filter(TRACTCE != 980000)
+
+length(unique(test1$MinDistToHwy))
+length(unique(test1$TRACTCE))
+
+write.csv(test1, "~/Desktop/valeska-honors-new/data-clean/metroarea_panel_both.csv") 
+```
+
+```{r}
+##########Download dataset. 
+
+metroarea <- read.csv("~/Desktop/valeska-honors-new/data-clean/metroarea_centroids_both.csv",
+          sep=",", header=TRUE)
+
+########Before start, make sure you take away the respective census tracts
+#######if looking at centroids:
+
+##exclude tracts which centroids' is in between 600m and 1500m
+metroarea %>% 
+  filter(MinDistToHwy<=600 | MinDistToHwy >=1500)
+
+#######if looking at polygons:
+#take out the other census tracts!!
+takeout<-test %>% 
+  filter(HWY600m == "FALSE" & MinDistToHwy <=1500)
+
+test <- test %>% anti_join(takeout, by = "TRACTCE") 
+
+
+####Regressions
+
+a<- feols(log_pollution ~ HWY600m + covid + HWY600m*covid, data = test)
+b<- feols(log_pollution ~  covid + HWY600m*covid| TRACTCE + Month, data = test)
+c<- feols(log_pollution ~ HWY600m*covid| TRACTCE + Date, data = test)
+etable(a,b,c)
+
+d<-feols(log_pollution ~ i(Date_ID, HWY600m, 63) | TRACTCE +Date_ID , data = test)
+summary(a)
+coefplot(a)
+
+a<- feols(Pollution ~ HWY600m + covid + HWY600m*covid, data = test)
+b<- feols(Pollution ~  covid + HWY600m*covid| TRACTCE + Month, data = test)
+c<- feols(Pollution ~ HWY600m*covid| TRACTCE + Date, data = test)
+etable(a,b,c)
+
+feols(Pollution ~ CloseHW + covid + CloseHW*covid, data = test)
+feols(Pollution ~ CloseHW + covid + CloseHW*covid + i(Month), data = test)
+feols(Pollution ~ CloseHW*covid + i(TRACTCE) + i(Month) , data = test)
+
+feols(Pollution ~ covid + near + near_post |  Month, data = test)
+feols(Pollution ~ covid + near_post | TRACTCE + Month, data = test) 
+
+feols(log_pollution ~ covid + near_post | TRACTCE + Date, data = test) 
+##check tract classification (if classified as near, near for all month/years)
+## > length(unique(test$MinDistToHwy))
+## 784
+##length(unique(test$TRACTCE))
+## 783
+summary(test)
+
+a <- feols(Pollution ~ i(Date), data = test)
+summary(a)
+
+b <- feols(log_pollution~ i(near, i.Date) | TRACTCE, data = test, vcov = ~TRACTCE)
+summary(b)
+iplot(b)
+
+c <-feols(Pollution~ i(near_date) | Date + TRACTCE, test)
+summary(c)
+iplot(c)
+##graph near::1 coefficients from model b
+
+ggcoef(tail(broom::tidy(b, conf.int = TRUE), 20) , sort = "ascending")
+
+tbl <- tail(broom::tidy(b, conf.int = TRUE), 51)
+tbl$term <- factor(tbl$term, levels = tbl$term)
+ggcoef(tbl) + coord_flip() + theme(axis.text.x = element_text(angle = 45)) 
+
+```
+
